@@ -140,7 +140,13 @@ std::vector<std::string> Writer::buffer_names() const {
 QueryBuffer Writer::buffer(const std::string& name) const {
   // Special zipped coordinates
   if (name == constants::coords)
-    return QueryBuffer(coords_buffer_, nullptr, coords_buffer_size_, nullptr);
+    return QueryBuffer(
+        coords_buffer_,
+        nullptr,
+        nullptr,
+        coords_buffer_size_,
+        nullptr,
+        nullptr);
 
   // Attribute or dimension
   auto buf = buffers_.find(name);
@@ -185,6 +191,8 @@ Status Writer::get_buffer(
   return Status::Ok();
 }
 
+// TODO JOE get_buffer nullable
+
 Status Writer::get_buffer(
     const std::string& name,
     uint64_t** buffer_off,
@@ -209,6 +217,8 @@ Status Writer::get_buffer(
 
   return Status::Ok();
 }
+
+// TODO JOE get_buffer nullable
 
 bool Writer::get_check_coord_dups() const {
   return check_coord_dups_;
@@ -291,7 +301,7 @@ void Writer::set_array_schema(const ArraySchema* array_schema) {
 }
 
 Status Writer::set_buffer(
-    const std::string& name, void* buffer, uint64_t* buffer_size) {
+    const std::string& name, void* const buffer, uint64_t* const buffer_size) {
   // Check buffer
   if (buffer == nullptr || buffer_size == nullptr)
     return LOG_STATUS(Status::WriterError(
@@ -307,8 +317,8 @@ Status Writer::set_buffer(
     return set_coords_buffer(buffer, buffer_size);
 
   // For easy reference
-  bool is_dim = array_schema_->is_dim(name);
-  bool is_attr = array_schema_->is_attr(name);
+  const bool is_dim = array_schema_->is_dim(name);
+  const bool is_attr = array_schema_->is_attr(name);
 
   // Neither a dimension nor an attribute
   if (!is_dim && !is_attr)
@@ -316,9 +326,14 @@ Status Writer::set_buffer(
         std::string("Cannot set buffer; Invalid buffer name '") + name +
         "' (it should be an attribute or dimension)"));
 
+  // Must not be nullable
+  if (array_schema_->is_nullable(name))
+    return LOG_STATUS(Status::WriterError(
+        std::string("Cannot set buffer; Input attribute/dimension '") + name +
+        "' is nullable"));
+
   // Error if it is var-sized
-  bool var_size = (array_schema_->var_size(name));
-  if (var_size)
+  if (array_schema_->var_size(name))
     return LOG_STATUS(Status::WriterError(
         std::string("Cannot set buffer; Input attribute/dimension '") + name +
         "' is var-sized"));
@@ -352,17 +367,18 @@ Status Writer::set_buffer(
   }
 
   // Set attribute/dimension buffer
-  buffers_[name] = QueryBuffer(buffer, nullptr, buffer_size, nullptr);
+  buffers_[name] =
+      QueryBuffer(buffer, nullptr, nullptr, buffer_size, nullptr, nullptr);
 
   return Status::Ok();
 }
 
 Status Writer::set_buffer(
     const std::string& name,
-    uint64_t* buffer_off,
-    uint64_t* buffer_off_size,
-    void* buffer_val,
-    uint64_t* buffer_val_size) {
+    uint64_t* const buffer_off,
+    uint64_t* const buffer_off_size,
+    void* const buffer_val,
+    uint64_t* const buffer_val_size) {
   // Check buffer
   if (buffer_off == nullptr || buffer_off_size == nullptr ||
       buffer_val == nullptr || buffer_val_size == nullptr)
@@ -375,8 +391,8 @@ Status Writer::set_buffer(
         Status::WriterError("Cannot set buffer; Array schema not set"));
 
   // For easy reference
-  bool is_dim = array_schema_->is_dim(name);
-  bool is_attr = array_schema_->is_attr(name);
+  const bool is_dim = array_schema_->is_dim(name);
+  const bool is_attr = array_schema_->is_attr(name);
 
   // Neither a dimension nor an attribute
   if (!is_dim && !is_attr)
@@ -384,9 +400,14 @@ Status Writer::set_buffer(
         std::string("Cannot set buffer; Invalid buffer name '") + name +
         "' (it should be an attribute or dimension)"));
 
+  // Must not be nullable
+  if (array_schema_->is_nullable(name))
+    return LOG_STATUS(Status::WriterError(
+        std::string("Cannot set buffer; Input attribute/dimension '") + name +
+        "' is nullable"));
+
   // Error if it is fixed-sized
-  bool var_size = (array_schema_->var_size(name));
-  if (!var_size)
+  if (!array_schema_->var_size(name))
     return LOG_STATUS(Status::WriterError(
         std::string("Cannot set buffer; Input attribute/dimension '") + name +
         "' is fixed-sized"));
@@ -414,8 +435,130 @@ Status Writer::set_buffer(
   }
 
   // Set attribute/dimension buffer
-  buffers_[name] =
-      QueryBuffer(buffer_off, buffer_val, buffer_off_size, buffer_val_size);
+  buffers_[name] = QueryBuffer(
+      buffer_off,
+      buffer_val,
+      nullptr,
+      buffer_off_size,
+      buffer_val_size,
+      nullptr);
+
+  return Status::Ok();
+}
+
+Status Writer::set_buffer(
+    const std::string& name,
+    void* const buffer,
+    uint64_t* const buffer_size,
+    ValidityVector* const validity_vector) {
+  // Check buffer
+  if (buffer == nullptr || buffer_size == nullptr)
+    return LOG_STATUS(Status::WriterError(
+        "Cannot set buffer; Buffer or buffer size is null"));
+
+  // Check validity vector
+  if (validity_vector == nullptr)
+    return LOG_STATUS(
+        Status::WriterError("Cannot set buffer; Validity vector is null"));
+
+  // Array schema must exist
+  if (array_schema_ == nullptr)
+    return LOG_STATUS(
+        Status::WriterError("Cannot set buffer; Array schema not set"));
+
+  // Must be an attribute
+  if (!array_schema_->is_attr(name))
+    return LOG_STATUS(Status::WriterError(
+        std::string("Cannot set buffer; Buffer name '") + name +
+        "' is not an attribute"));
+
+  // Must be fixed-size
+  if (array_schema_->var_size(name))
+    return LOG_STATUS(Status::WriterError(
+        std::string("Cannot set buffer; Input attribute '") + name +
+        "' is var-sized"));
+
+  // Must be nullable
+  if (!array_schema_->is_nullable(name))
+    return LOG_STATUS(Status::WriterError(
+        std::string("Cannot set buffer; Input attribute '") + name +
+        "' is not nullable"));
+
+  // Error if setting a new attribute after initialization
+  const bool exists = buffers_.find(name) != buffers_.end();
+  if (initialized_ && !exists)
+    return LOG_STATUS(Status::WriterError(
+        std::string("Cannot set buffer for new attribute '") + name +
+        "' after initialization"));
+
+  // Set attribute/dimension buffer
+  buffers_[name] = QueryBuffer(
+      buffer,
+      nullptr,
+      validity_vector->buffer(),
+      buffer_size,
+      nullptr,
+      validity_vector->buffer_size());
+
+  return Status::Ok();
+}
+
+Status Writer::set_buffer(
+    const std::string& name,
+    uint64_t* const buffer_off,
+    uint64_t* const buffer_off_size,
+    void* const buffer_val,
+    uint64_t* const buffer_val_size,
+    ValidityVector* const validity_vector) {
+  // Check buffer
+  if (buffer_off == nullptr || buffer_off_size == nullptr ||
+      buffer_val == nullptr || buffer_val_size == nullptr)
+    return LOG_STATUS(Status::WriterError(
+        "Cannot set buffer; Buffer or buffer size is null"));
+
+  // Check validity vector
+  if (validity_vector == nullptr)
+    return LOG_STATUS(
+        Status::WriterError("Cannot set buffer; Validity vector is null"));
+
+  // Array schema must exist
+  if (array_schema_ == nullptr)
+    return LOG_STATUS(
+        Status::WriterError("Cannot set buffer; Array schema not set"));
+
+  // Must be an attribute
+  if (!array_schema_->is_attr(name))
+    return LOG_STATUS(Status::WriterError(
+        std::string("Cannot set buffer; Buffer name '") + name +
+        "' is not an attribute"));
+
+  // Must be var-size
+  if (!array_schema_->var_size(name))
+    return LOG_STATUS(Status::WriterError(
+        std::string("Cannot set buffer; Input attribute '") + name +
+        "' is fixed-sized"));
+
+  // Must be nullable
+  if (!array_schema_->is_nullable(name))
+    return LOG_STATUS(Status::WriterError(
+        std::string("Cannot set buffer; Input attribute '") + name +
+        "' is not nullable"));
+
+  // Error if setting a new attribute after initialization
+  const bool exists = buffers_.find(name) != buffers_.end();
+  if (initialized_ && !exists)
+    return LOG_STATUS(Status::WriterError(
+        std::string("Cannot set buffer for new attribute '") + name +
+        "' after initialization"));
+
+  // Set attribute/dimension buffer
+  buffers_[name] = QueryBuffer(
+      buffer_off,
+      buffer_val,
+      validity_vector->buffer(),
+      buffer_off_size,
+      buffer_val_size,
+      validity_vector->buffer_size());
 
   return Status::Ok();
 }
@@ -805,6 +948,7 @@ Status Writer::check_global_order() const {
     return Status::Ok();
 
   // Prepare auxiliary vector for better performance
+  // TODO JOE
   auto dim_num = array_schema_->dim_num();
   std::vector<const QueryBuffer*> buffs(dim_num);
   for (unsigned d = 0; d < dim_num; ++d) {
@@ -878,6 +1022,8 @@ Status Writer::close_files(FragmentMetadata* meta) const {
     RETURN_NOT_OK(storage_manager_->close_file(meta->uri(name)));
     if (array_schema_->var_size(name))
       RETURN_NOT_OK(storage_manager_->close_file(meta->var_uri(name)));
+    if (array_schema_->is_nullable(name))
+      RETURN_NOT_OK(storage_manager_->close_file(meta->validity_uri(name)));
   }
 
   return Status::Ok();
@@ -1077,6 +1223,8 @@ Status Writer::compute_coords_metadata(
   // Compute number of tiles. Assumes all attributes and
   // and dimensions have the same number of tiles
   auto it = tiles.begin();
+  // TODO JOE
+  LOG_FATAL("TODO JOE compute_coords_metadata");
   auto tile_num = array_schema_->var_size(it->first) ? it->second.size() / 2 :
                                                        it->second.size();
   auto dim_num = array_schema_->dim_num();
@@ -1223,12 +1371,20 @@ Status Writer::filter_tiles(
 
 Status Writer::filter_tiles(
     const std::string& name, std::vector<Tile>* tiles) const {
-  bool var_size = array_schema_->var_size(name);
+  const bool var_size = array_schema_->var_size(name);
+  const bool nullable = array_schema_->is_nullable(name);
+
   // Filter all tiles
   auto tile_num = tiles->size();
   for (size_t i = 0; i < tile_num; ++i) {
     RETURN_NOT_OK(filter_tile(name, &(*tiles)[i], var_size));
+
     if (var_size) {
+      ++i;
+      RETURN_NOT_OK(filter_tile(name, &(*tiles)[i], false));
+    }
+
+    if (nullable) {
       ++i;
       RETURN_NOT_OK(filter_tile(name, &(*tiles)[i], false));
     }
@@ -1323,6 +1479,8 @@ Status Writer::finalize_global_write_state() {
 Status Writer::global_write() {
   // Applicable only to global write on dense/sparse arrays
   assert(layout_ == Layout::GLOBAL_ORDER);
+
+  LOG_FATAL("TODO JOE global_write");
 
   // Initialize the global write state if this is the first invocation
   if (!global_write_state_) {
@@ -1431,8 +1589,11 @@ Status Writer::filter_last_tiles(
         std::advance(buff_it, i);
         const auto& name = &(buff_it->first);
 
-        auto& last_tile = global_write_state_->last_tiles_[*name].first;
-        auto& last_tile_var = global_write_state_->last_tiles_[*name].second;
+        auto& last_tile = std::get<0>(global_write_state_->last_tiles_[*name]);
+        auto& last_tile_var =
+            std::get<1>(global_write_state_->last_tiles_[*name]);
+        auto& last_tile_validity =
+            std::get<2>(global_write_state_->last_tiles_[*name]);
 
         if (!last_tile.empty()) {
           std::vector<Tile>& tiles_ref = (*tiles)[*name];
@@ -1441,6 +1602,8 @@ Status Writer::filter_last_tiles(
           tiles_ref.push_back(last_tile.clone(false));
           if (!last_tile_var.empty())
             tiles_ref.push_back(last_tile_var.clone(false));
+          if (!last_tile_validity.empty())
+            tiles_ref.push_back(last_tile_validity.clone(false));
         }
         return Status::Ok();
       });
@@ -1469,7 +1632,7 @@ bool Writer::all_last_tiles_empty() const {
   // See if any last attribute/coordinate tiles are nonempty
   for (const auto& it : buffers_) {
     const auto& name = it.first;
-    auto& last_tile = global_write_state_->last_tiles_[name].first;
+    auto& last_tile = std::get<0>(global_write_state_->last_tiles_[name]);
     if (!last_tile.empty())
       return false;
   }
@@ -1494,18 +1657,33 @@ Status Writer::init_global_write_state() {
   for (const auto& it : buffers_) {
     // Initialize last tiles
     const auto& name = it.first;
-    auto last_tile_pair = std::pair<std::string, std::pair<Tile, Tile>>(
-        name, std::pair<Tile, Tile>(Tile(), Tile()));
-    auto it_ret = global_write_state_->last_tiles_.emplace(last_tile_pair);
+    auto last_tile_tuple = std::pair<std::string, std::tuple<Tile, Tile, Tile>>(
+        name, std::tuple<Tile, Tile, Tile>(Tile(), Tile(), Tile()));
+    auto it_ret = global_write_state_->last_tiles_.emplace(last_tile_tuple);
 
     if (!array_schema_->var_size(name)) {
-      auto& last_tile = it_ret.first->second.first;
-      RETURN_NOT_OK_ELSE(init_tile(name, &last_tile), clean_up(uri));
+      auto& last_tile = std::get<0>(it_ret.first->second);
+      if (!array_schema_->is_nullable(name)) {
+        RETURN_NOT_OK_ELSE(init_tile(name, &last_tile), clean_up(uri));
+      } else {
+        auto& last_tile_validity = std::get<2>(it_ret.first->second);
+        RETURN_NOT_OK_ELSE(
+            init_tile_nullable(name, &last_tile, &last_tile_validity),
+            clean_up(uri));
+      }
     } else {
-      auto& last_tile = it_ret.first->second.first;
-      auto& last_tile_var = it_ret.first->second.second;
-      RETURN_NOT_OK_ELSE(
-          init_tile(name, &last_tile, &last_tile_var), clean_up(uri));
+      auto& last_tile = std::get<0>(it_ret.first->second);
+      auto& last_tile_var = std::get<1>(it_ret.first->second);
+      if (!array_schema_->is_nullable(name)) {
+        RETURN_NOT_OK_ELSE(
+            init_tile(name, &last_tile, &last_tile_var), clean_up(uri));
+      } else {
+        auto& last_tile_validity = std::get<2>(it_ret.first->second);
+        RETURN_NOT_OK_ELSE(
+            init_tile_nullable(
+                name, &last_tile, &last_tile_var, &last_tile_validity),
+            clean_up(uri));
+      }
     }
 
     // Initialize cells written
@@ -1549,6 +1727,60 @@ Status Writer::init_tile(
       0));
   RETURN_NOT_OK(tile_var->init_unfiltered(
       constants::format_version, type, tile_size, datatype_size(type), 0));
+  return Status::Ok();
+}
+
+Status Writer::init_tile_nullable(
+    const std::string& name, Tile* tile, Tile* tile_validity) const {
+  // For easy reference
+  auto cell_size = array_schema_->cell_size(name);
+  auto type = array_schema_->type(name);
+  auto domain = array_schema_->domain();
+  auto capacity = array_schema_->capacity();
+  auto cell_num_per_tile = has_coords_ ? capacity : domain->cell_num_per_tile();
+  auto tile_size = cell_num_per_tile * cell_size;
+
+  // Initialize
+  RETURN_NOT_OK(tile->init_unfiltered(
+      constants::format_version, type, tile_size, cell_size, 0));
+  RETURN_NOT_OK(tile_validity->init_unfiltered(
+      constants::format_version,
+      constants::cell_validity_type,
+      tile_size,
+      constants::cell_validity_size,
+      0));
+
+  return Status::Ok();
+}
+
+Status Writer::init_tile_nullable(
+    const std::string& name,
+    Tile* tile,
+    Tile* tile_var,
+    Tile* tile_validity) const {
+  // For easy reference
+  auto type = array_schema_->type(name);
+  auto domain = array_schema_->domain();
+  auto capacity = array_schema_->capacity();
+  auto cell_num_per_tile = has_coords_ ? capacity : domain->cell_num_per_tile();
+  auto tile_size = cell_num_per_tile * constants::cell_var_offset_size;
+
+  // Initialize
+  RETURN_NOT_OK(tile->init_unfiltered(
+      constants::format_version,
+      constants::cell_var_offset_type,
+      tile_size,
+      constants::cell_var_offset_size,
+      0));
+  RETURN_NOT_OK(tile_var->init_unfiltered(
+      constants::format_version, type, tile_size, datatype_size(type), 0));
+  RETURN_NOT_OK(tile_validity->init_unfiltered(
+      constants::format_version,
+      constants::cell_validity_type,
+      tile_size,
+      constants::cell_validity_size,
+      0));
+
   return Status::Ok();
 }
 
@@ -1618,14 +1850,25 @@ Status Writer::init_tiles(
     uint64_t tile_num,
     std::vector<Tile>* tiles) const {
   // Initialize tiles
-  bool var_size = array_schema_->var_size(name);
-  auto tiles_len = (var_size) ? 2 * tile_num : tile_num;
+  const bool var_size = array_schema_->var_size(name);
+  const bool nullable = array_schema_->is_nullable(name);
+  const size_t t =
+      1 + static_cast<size_t>(var_size) + static_cast<size_t>(nullable);
+  const size_t tiles_len = t * tile_num;
   tiles->resize(tiles_len);
-  for (size_t i = 0; i < tiles_len; i += (1 + var_size)) {
+  for (size_t i = 0; i < tiles_len; i += t) {
     if (!var_size) {
-      RETURN_NOT_OK(init_tile(name, &((*tiles)[i])));
+      if (nullable)
+        RETURN_NOT_OK(
+            init_tile_nullable(name, &((*tiles)[i]), &((*tiles)[i + 1])));
+      else
+        RETURN_NOT_OK(init_tile(name, &((*tiles)[i])));
     } else {
-      RETURN_NOT_OK(init_tile(name, &((*tiles)[i]), &((*tiles)[i + 1])));
+      if (nullable)
+        RETURN_NOT_OK(init_tile_nullable(
+            name, &((*tiles)[i]), &((*tiles)[i + 1]), &((*tiles)[i + 2])));
+      else
+        RETURN_NOT_OK(init_tile(name, &((*tiles)[i]), &((*tiles)[i + 1])));
     }
   }
 
@@ -1779,22 +2022,6 @@ Status Writer::prepare_and_filter_attr_tiles(
         const auto& attr = buff_it->first;
         auto& tiles = (*attr_tiles)[attr];
         RETURN_CANCEL_OR_ERROR(prepare_tiles(attr, write_cell_ranges, &tiles));
-
-        /*
-            if (i == 0) {
-              // Gather stats
-              const uint64_t tile_num = write_cell_ranges.size();
-              uint64_t cell_num = 0;
-              auto var_size = array_schema_->var_size(attr);
-              for (size_t t = 0; t < tile_num; ++t)
-                cell_num += var_size ? tiles[2 * t].cell_num() :
-           tiles[t].cell_num();
-              STATS_ADD_COUNTER(stats::Stats::CounterType::WRITE_CELL_NUM,
-           cell_num);
-           STATS_ADD_COUNTER(stats::Stats::CounterType::WRITE_TILE_NUM,
-           tile_num);
-            }
-        */
         RETURN_CANCEL_OR_ERROR(filter_tiles(attr, &tiles));
         return Status::Ok();
       });
@@ -1816,6 +2043,9 @@ Status Writer::prepare_full_tiles(
   // Initialize attribute and coordinate tiles
   for (const auto& it : buffers_)
     (*tiles)[it.first] = std::vector<Tile>();
+
+  // TODO JOE: modify this path for nullable
+  LOG_FATAL("TODO JOE prepare_full_tiles");
 
   auto num = buffers_.size();
   auto statuses =
@@ -1841,6 +2071,7 @@ Status Writer::prepare_full_tiles(
     const std::string& name,
     const std::set<uint64_t>& coord_dups,
     std::vector<Tile>* tiles) const {
+  LOG_FATAL("TODO JOE prepare_full_tiles");
   return array_schema_->var_size(name) ?
              prepare_full_tiles_var(name, coord_dups, tiles) :
              prepare_full_tiles_fixed(name, coord_dups, tiles);
@@ -1865,7 +2096,7 @@ Status Writer::prepare_full_tiles_fixed(
     return Status::Ok();
 
   // First fill the last tile
-  auto& last_tile = global_write_state_->last_tiles_[name].first;
+  auto& last_tile = std::get<0>(global_write_state_->last_tiles_[name]);
   uint64_t cell_idx = 0;
   if (!last_tile.empty()) {
     if (coord_dups.empty()) {
@@ -1969,9 +2200,12 @@ Status Writer::prepare_full_tiles_var(
     return Status::Ok();
 
   // First fill the last tile
-  auto& last_tile_pair = global_write_state_->last_tiles_[name];
-  auto& last_tile = last_tile_pair.first;
-  auto& last_tile_var = last_tile_pair.second;
+  auto& last_tile_tuple = global_write_state_->last_tiles_[name];
+  auto& last_tile = std::get<0>(last_tile_tuple);
+  auto& last_tile_var = std::get<1>(last_tile_tuple);
+  auto& last_tile_validity = std::get<2>(last_tile_tuple);
+
+  (void)last_tile_validity;
 
   uint64_t cell_idx = 0;
   if (!last_tile.empty()) {
@@ -2120,12 +2354,15 @@ Status Writer::prepare_tiles(
     return Status::Ok();
 
   // For easy reference
+  auto nullable = array_schema_->is_nullable(attribute);
   auto var_size = array_schema_->var_size(attribute);
   auto it = buffers_.find(attribute);
   auto buffer = (uint64_t*)it->second.buffer_;
   auto buffer_var = (uint64_t*)it->second.buffer_var_;
+  auto buffer_validity = (uint64_t*)it->second.buffer_validity_;
   auto buffer_size = it->second.buffer_size_;
   auto buffer_var_size = it->second.buffer_var_size_;
+  auto buffer_validity_size = it->second.buffer_validity_size_;
   auto cell_val_num = array_schema_->cell_val_num(attribute);
 
   // Initialize tiles and buffer
@@ -2134,47 +2371,101 @@ Status Writer::prepare_tiles(
   auto buff_var =
       (!var_size) ? nullptr :
                     std::make_shared<ConstBuffer>(buffer_var, *buffer_var_size);
+  auto buff_validity =
+      (!nullable) ?
+          nullptr :
+          std::make_shared<ConstBuffer>(buffer_validity, *buffer_validity_size);
 
   // Populate each tile with the write cell ranges
-  uint64_t end_pos = array_schema_->domain()->cell_num_per_tile() - 1;
-  for (size_t i = 0, t = 0; i < tile_num; ++i, t += (var_size) ? 2 : 1) {
+  const uint64_t end_pos = array_schema_->domain()->cell_num_per_tile() - 1;
+  const uint64_t t_inc = 1 + (var_size ? 1 : 0) + (nullable ? 1 : 0);
+  for (size_t i = 0, t = 0; i < tile_num; ++i, t += t_inc) {
     uint64_t pos = 0;
     for (const auto& wcr : write_cell_ranges[i]) {
       // Write empty range
       if (wcr.pos_ > pos) {
-        if (var_size)
-          RETURN_NOT_OK(write_empty_cell_range_to_tile_var(
-              wcr.pos_ - pos, &(*tiles)[t], &(*tiles)[t + 1]));
-        else
-          RETURN_NOT_OK(write_empty_cell_range_to_tile(
-              (wcr.pos_ - pos) * cell_val_num, &(*tiles)[t]));
+        if (var_size) {
+          if (nullable)
+            RETURN_NOT_OK(write_empty_cell_range_to_tile_var_nullable(
+                wcr.pos_ - pos,
+                &(*tiles)[t],
+                &(*tiles)[t + 1],
+                &(*tiles)[t + 2]));
+          else
+            RETURN_NOT_OK(write_empty_cell_range_to_tile_var(
+                wcr.pos_ - pos, &(*tiles)[t], &(*tiles)[t + 1]));
+        } else {
+          if (nullable)
+            RETURN_NOT_OK(write_empty_cell_range_to_tile_nullable(
+                (wcr.pos_ - pos) * cell_val_num,
+                &(*tiles)[t],
+                &(*tiles)[t + 1]));
+          else
+            RETURN_NOT_OK(write_empty_cell_range_to_tile(
+                (wcr.pos_ - pos) * cell_val_num, &(*tiles)[t]));
+        }
         pos = wcr.pos_;
       }
 
       // Write (non-empty) range
-      if (var_size)
-        RETURN_NOT_OK(write_cell_range_to_tile_var(
-            buff.get(),
-            buff_var.get(),
-            wcr.start_,
-            wcr.end_,
-            &(*tiles)[t],
-            &(*tiles)[t + 1]));
-      else
-        RETURN_NOT_OK(write_cell_range_to_tile(
-            buff.get(), wcr.start_, wcr.end_, &(*tiles)[t]));
+      if (var_size) {
+        if (nullable)
+          RETURN_NOT_OK(write_cell_range_to_tile_var_nullable(
+              buff.get(),
+              buff_var.get(),
+              buff_validity.get(),
+              wcr.start_,
+              wcr.end_,
+              &(*tiles)[t],
+              &(*tiles)[t + 1],
+              &(*tiles)[t + 2]));
+        else
+          RETURN_NOT_OK(write_cell_range_to_tile_var(
+              buff.get(),
+              buff_var.get(),
+              wcr.start_,
+              wcr.end_,
+              &(*tiles)[t],
+              &(*tiles)[t + 1]));
+      } else {
+        if (nullable)
+          RETURN_NOT_OK(write_cell_range_to_tile_nullable(
+              buff.get(),
+              buff_validity.get(),
+              wcr.start_,
+              wcr.end_,
+              &(*tiles)[t],
+              &(*tiles)[t + 1]));
+        else
+          RETURN_NOT_OK(write_cell_range_to_tile(
+              buff.get(), wcr.start_, wcr.end_, &(*tiles)[t]));
+      }
 
       pos += wcr.end_ - wcr.start_ + 1;
     }
 
     // Write empty range
     if (pos <= end_pos) {
-      if (var_size)
-        RETURN_NOT_OK(write_empty_cell_range_to_tile_var(
-            end_pos - pos + 1, &(*tiles)[t], &(*tiles)[t + 1]));
-      else
-        RETURN_NOT_OK(write_empty_cell_range_to_tile(
-            (end_pos - pos + 1) * cell_val_num, &(*tiles)[t]));
+      if (var_size) {
+        if (nullable)
+          RETURN_NOT_OK(write_empty_cell_range_to_tile_var_nullable(
+              end_pos - pos + 1,
+              &(*tiles)[t],
+              &(*tiles)[t + 1],
+              &(*tiles)[t + 2]));
+        else
+          RETURN_NOT_OK(write_empty_cell_range_to_tile_var(
+              end_pos - pos + 1, &(*tiles)[t], &(*tiles)[t + 1]));
+      } else {
+        if (nullable)
+          RETURN_NOT_OK(write_empty_cell_range_to_tile_nullable(
+              (end_pos - pos + 1) * cell_val_num,
+              &(*tiles)[t],
+              &(*tiles)[t + 1]));
+        else
+          RETURN_NOT_OK(write_empty_cell_range_to_tile(
+              (end_pos - pos + 1) * cell_val_num, &(*tiles)[t]));
+      }
     }
   }
 
@@ -2218,6 +2509,7 @@ Status Writer::prepare_tiles(
     const std::vector<uint64_t>& cell_pos,
     const std::set<uint64_t>& coord_dups,
     std::vector<Tile>* tiles) const {
+  LOG_FATAL("TODO JOE prepare_tiles");
   return array_schema_->var_size(name) ?
              prepare_tiles_var(name, cell_pos, coord_dups, tiles) :
              prepare_tiles_fixed(name, cell_pos, coord_dups, tiles);
@@ -2455,8 +2747,10 @@ Status Writer::unordered_write() {
 
   // Set the number of tiles in the metadata
   auto it = tiles.begin();
-  auto tile_num = array_schema_->var_size(it->first) ? it->second.size() / 2 :
-                                                       it->second.size();
+  const uint64_t tile_num_divisor =
+      1 + (array_schema_->var_size(it->first) ? 1 : 0) +
+      (array_schema_->is_nullable(it->first) ? 1 : 0);
+  auto tile_num = it->second.size() / tile_num_divisor;
   frag_meta->set_num_tiles(tile_num);
 
   STATS_ADD_COUNTER(stats::Stats::CounterType::WRITE_TILE_NUM, tile_num);
@@ -2500,6 +2794,24 @@ Status Writer::write_empty_cell_range_to_tile(uint64_t num, Tile* tile) const {
   return Status::Ok();
 }
 
+Status Writer::write_empty_cell_range_to_tile_nullable(
+    uint64_t num, Tile* tile, Tile* tile_validity) const {
+  auto type = tile->type();
+  auto fill_size = datatype_size(type);
+  auto fill_value = constants::fill_value(type);
+  assert(fill_value != nullptr);
+
+  for (uint64_t i = 0; i < num; ++i) {
+    RETURN_NOT_OK(tile->write(fill_value, fill_size));
+
+    // Write validity empty value
+    uint8_t empty_validity_value = 0;
+    RETURN_NOT_OK(tile_validity->write(&empty_validity_value, sizeof(uint8_t)));
+  }
+
+  return Status::Ok();
+}
+
 Status Writer::write_empty_cell_range_to_tile_var(
     uint64_t num, Tile* tile, Tile* tile_var) const {
   auto type = tile_var->type();
@@ -2519,11 +2831,53 @@ Status Writer::write_empty_cell_range_to_tile_var(
   return Status::Ok();
 }
 
+Status Writer::write_empty_cell_range_to_tile_var_nullable(
+    uint64_t num, Tile* tile, Tile* tile_var, Tile* tile_validity) const {
+  auto type = tile_var->type();
+  auto fill_size = datatype_size(type);
+  auto fill_value = constants::fill_value(type);
+  assert(fill_value != nullptr);
+
+  for (uint64_t i = 0; i < num; ++i) {
+    // Write next offset
+    const uint64_t next_offset = tile_var->size();
+    RETURN_NOT_OK(tile->write(&next_offset, sizeof(uint64_t)));
+
+    // Write variable-sized empty value
+    RETURN_NOT_OK(tile_var->write(fill_value, fill_size));
+
+    // Write validity empty value
+    uint8_t empty_validity_value = 0;
+    RETURN_NOT_OK(tile_validity->write(&empty_validity_value, sizeof(uint8_t)));
+  }
+
+  return Status::Ok();
+}
+
 Status Writer::write_cell_range_to_tile(
     ConstBuffer* buff, uint64_t start, uint64_t end, Tile* tile) const {
-  auto cell_size = tile->cell_size();
-  buff->set_offset(start * cell_size);
-  return tile->write(buff, (end - start + 1) * cell_size);
+  auto fixed_cell_size = tile->cell_size();
+  buff->set_offset(start * fixed_cell_size);
+  return tile->write(buff, (end - start + 1) * fixed_cell_size);
+}
+
+Status Writer::write_cell_range_to_tile_nullable(
+    ConstBuffer* buff,
+    ConstBuffer* buff_validity,
+    uint64_t start,
+    uint64_t end,
+    Tile* tile,
+    Tile* tile_validity) const {
+  auto fixed_cell_size = tile->cell_size();
+  buff->set_offset(start * fixed_cell_size);
+  RETURN_NOT_OK(tile->write(buff, (end - start + 1) * fixed_cell_size));
+
+  auto validity_cell_size = constants::cell_validity_size;
+  buff_validity->set_offset(start * validity_cell_size);
+  RETURN_NOT_OK(tile_validity->write(
+      buff_validity, (end - start + 1) * validity_cell_size));
+
+  return Status::Ok();
 }
 
 Status Writer::write_cell_range_to_tile_var(
@@ -2549,6 +2903,39 @@ Status Writer::write_cell_range_to_tile_var(
     auto cell_var_size = end_offset - start_offset;
     buff_var->set_offset(start_offset);
     RETURN_NOT_OK(tile_var->write(buff_var, cell_var_size));
+  }
+
+  return Status::Ok();
+}
+
+Status Writer::write_cell_range_to_tile_var_nullable(
+    ConstBuffer* buff,
+    ConstBuffer* buff_var,
+    ConstBuffer* buff_validity,
+    uint64_t start,
+    uint64_t end,
+    Tile* tile,
+    Tile* tile_var,
+    Tile* tile_validity) const {
+  auto buff_cell_num = buff->size() / sizeof(uint64_t);
+
+  for (auto i = start; i <= end; ++i) {
+    // Write next offset
+    uint64_t next_offset = tile_var->size();
+    RETURN_NOT_OK(tile->write(&next_offset, sizeof(uint64_t)));
+
+    // Write variable-sized value
+    auto last_cell = (i == buff_cell_num - 1);
+    auto start_offset = buff->value<uint64_t>(i * sizeof(uint64_t));
+    auto end_offset = last_cell ?
+                          buff_var->size() :
+                          buff->value<uint64_t>((i + 1) * sizeof(uint64_t));
+    auto cell_var_size = end_offset - start_offset;
+    buff_var->set_offset(start_offset);
+    RETURN_NOT_OK(tile_var->write(buff_var, cell_var_size));
+
+    RETURN_NOT_OK(tile_validity->write(
+        buff_validity, cell_var_size / tile_var->cell_size()));
   }
 
   return Status::Ok();
@@ -2588,9 +2975,11 @@ Status Writer::write_tiles(
     return Status::Ok();
 
   // For easy reference
-  bool var_size = array_schema_->var_size(name);
+  const bool var_size = array_schema_->var_size(name);
+  const bool nullable = array_schema_->is_nullable(name);
   const auto& uri = frag_meta->uri(name);
   const auto& var_uri = var_size ? frag_meta->var_uri(name) : URI("");
+  const auto& validity_uri = nullable ? frag_meta->validity_uri(name) : URI("");
 
   // Write tiles
   auto tile_num = tiles->size();
@@ -2608,6 +2997,16 @@ Status Writer::write_tiles(
           name, tile_id, tile->filtered_buffer()->size());
       frag_meta->set_tile_var_size(name, tile_id, tile->pre_filtered_size());
     }
+
+    if (nullable) {
+      ++i;
+
+      tile = &(*tiles)[i];
+      RETURN_NOT_OK(
+          storage_manager_->write(validity_uri, tile->filtered_buffer()));
+      frag_meta->set_tile_validity_offset(
+          name, tile_id, tile->filtered_buffer()->size());
+    }
   }
 
   // Close files, except in the case of global order
@@ -2615,6 +3014,9 @@ Status Writer::write_tiles(
     RETURN_NOT_OK(storage_manager_->close_file(frag_meta->uri(name)));
     if (var_size)
       RETURN_NOT_OK(storage_manager_->close_file(frag_meta->var_uri(name)));
+    if (nullable)
+      RETURN_NOT_OK(
+          storage_manager_->close_file(frag_meta->validity_uri(name)));
   }
 
   return Status::Ok();
@@ -2658,6 +3060,7 @@ Status Writer::set_coords_buffer(void* buffer, uint64_t* buffer_size) {
 }
 
 void Writer::get_dim_attr_stats() const {
+  // TODO JOE
   for (const auto& it : buffers_) {
     const auto& name = it.first;
     auto var_size = array_schema_->var_size(name);
