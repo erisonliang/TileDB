@@ -586,6 +586,30 @@ Status S3::move_dir(const URI& old_uri, const URI& new_uri) {
   return Status::Ok();
 }
 
+Status S3::copy_file(const URI& old_uri, const URI& new_uri) {
+  RETURN_NOT_OK(init_client());
+
+  RETURN_NOT_OK(copy_object(old_uri, new_uri));
+  return Status::Ok();
+}
+
+Status S3::copy_dir(const URI& old_uri, const URI& new_uri) {
+  RETURN_NOT_OK(init_client());
+
+  std::vector<std::string> paths;
+  const std::string& delimiterURI = old_uri.to_string();
+  std::cerr << delimiterURI << std::endl;
+  RETURN_NOT_OK(ls(old_uri, &paths, delimiterURI));
+  for (const auto& path : paths) {
+    std::cerr << path << std::endl;
+    auto suffix = path.substr(old_uri.to_string().size());
+    auto new_path = new_uri.join_path(suffix);
+    RETURN_NOT_OK(copy_object(URI(path), URI(new_path)));
+  }
+
+  return Status::Ok();
+}
+
 Status S3::object_size(const URI& uri, uint64_t* nbytes) const {
   RETURN_NOT_OK(init_client());
 

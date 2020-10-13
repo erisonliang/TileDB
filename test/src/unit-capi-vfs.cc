@@ -325,6 +325,9 @@ void VFSFx::check_vfs(const std::string& path) {
   // Ls
   check_ls(path);
 
+  // Copy
+  check_copy(path);
+
   if (supports_s3_ && path == S3_TEMP_DIR) {
     int is_empty;
     rc = tiledb_vfs_is_empty_bucket(ctx_, vfs_, S3_BUCKET.c_str(), &is_empty);
@@ -472,6 +475,9 @@ void VFSFx::check_move(const std::string& path) {
 
 #ifndef _WIN32
 void VFSFx::check_copy(const std::string& path) {
+  if (supports_hdfs_)
+    return;
+
   // Copy file when running on POSIX
   auto file = path + "file";
   auto file2 = path + "file2";
@@ -559,6 +565,38 @@ void VFSFx::check_copy(const std::string& path) {
   rc = tiledb_vfs_is_file(ctx_, vfs_, new_file2.c_str(), &is_file);
   REQUIRE(rc == TILEDB_OK);
   REQUIRE(is_file);
+
+  // Copy from one bucket to another (only for S3)
+  if (supports_s3_) {
+    if (path == S3_TEMP_DIR) {
+      std::string bucket2 = S3_PREFIX + random_name("tiledb") + "/";
+      std::string subdir3 = bucket2 + "tiledb_test/subdir3/";
+      std::string file3 = subdir3 + "file2";
+      int is_bucket = 0;
+
+      // no print statements are printing right now??
+      std::cerr << "TESTING TESTING" << bucket2 << std::endl;
+
+      rc = tiledb_vfs_is_bucket(ctx_, vfs_, bucket2.c_str(), &is_bucket);
+      REQUIRE(rc == TILEDB_OK);
+      if (is_bucket) {
+        rc = tiledb_vfs_remove_bucket(ctx_, vfs_, bucket2.c_str());
+        REQUIRE(rc == TILEDB_OK);
+      }
+
+      rc = tiledb_vfs_create_bucket(ctx_, vfs_, bucket2.c_str());
+      REQUIRE(rc == TILEDB_OK);
+
+      rc = tiledb_vfs_copy_dir(ctx_, vfs_, subdir2.c_str(), subdir3.c_str());
+      REQUIRE(rc == TILEDB_OK);
+      rc = tiledb_vfs_is_file(ctx_, vfs_, file3.c_str(), &is_file);
+      REQUIRE(rc == TILEDB_OK);
+      REQUIRE(is_file);
+
+      rc = tiledb_vfs_remove_bucket(ctx_, vfs_, bucket2.c_str());
+      REQUIRE(rc == TILEDB_OK);
+    }
+  }
 }
 #endif
 
