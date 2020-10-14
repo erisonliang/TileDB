@@ -79,6 +79,9 @@ VFS::VFS()
 #ifdef HAVE_GCS
   supported_fs_.insert(Filesystem::GCS);
 #endif
+#ifdef HAVE_MEMFS
+  supported_fs_.insert(Filesystem::MEMFS);
+#endif
 #ifdef HAVE_HDFS
   supported_fs_.insert(Filesystem::HDFS);
 #endif

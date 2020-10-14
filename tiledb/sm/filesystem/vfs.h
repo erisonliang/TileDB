@@ -63,6 +63,10 @@
 #include "tiledb/sm/filesystem/gcs.h"
 #endif
 
+#ifdef HAVE_MEMFS
+#include "tiledb/sm/filesystem/mem_filesystem.h"
+#endif
+
 #ifdef HAVE_S3
 #include "tiledb/sm/filesystem/s3.h"
 #endif
@@ -607,6 +611,10 @@ class VFS {
 
 #ifdef HAVE_GCS
   GCS gcs_;
+#endif
+
+#ifdef HAVE_MEMFS
+  MemFilesystem memfs_;
 #endif
 
 #ifdef HAVE_S3
