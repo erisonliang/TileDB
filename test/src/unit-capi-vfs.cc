@@ -574,9 +574,6 @@ void VFSFx::check_copy(const std::string& path) {
       std::string file3 = subdir3 + "file2";
       int is_bucket = 0;
 
-      // no print statements are printing right now??
-      std::cerr << "TESTING TESTING" << bucket2 << std::endl;
-
       rc = tiledb_vfs_is_bucket(ctx_, vfs_, bucket2.c_str(), &is_bucket);
       REQUIRE(rc == TILEDB_OK);
       if (is_bucket) {
